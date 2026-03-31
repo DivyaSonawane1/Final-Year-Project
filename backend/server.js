@@ -2,226 +2,194 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const { spawn } = require('child_process');
 const path = require('path');
+const axios = require('axios');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const JWT_SECRET = 'pm_internship_secret_key_2026';
 
-// Middleware
 app.use(cors());
 app.use(express.json());
 
-// MongoDB connection
 mongoose.connect('mongodb://127.0.0.1:27017/pm_internship_db', {
   useNewUrlParser: true,
   useUnifiedTopology: true,
 });
 
-// Internship Schema
-const internshipSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true },
-  title: { type: String, required: true },
-  company: { type: String, required: true },
-  sector: { type: String, required: true },
-  location: { type: String, required: true },
-  duration: { type: String, required: true },
-  stipend: { type: Number, default: 0 },
-  skills_required: [String],
-  education_level: { type: String, required: true },
-  description: { type: String, required: true },
-  application_deadline: { type: Date, required: true },
-  remote_friendly: { type: Boolean, default: false },
-  language_support: [String]
-});
+// ===================== SCHEMAS =====================
 
-const Internship = mongoose.model('Internship', internshipSchema);
-
-// User Profile Schema
-const userProfileSchema = new mongoose.Schema({
-  education_level: { type: String, required: true },
-  field_of_study: { type: String, required: true },
-  skills: [String],
-  sector_interests: [String],
-  location: { type: String, required: true },
-  preferred_language: { type: String, default: 'en' },
-  remote_preference: { type: Boolean, default: false },
+// User Auth Schema
+const userSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
   created_at: { type: Date, default: Date.now }
 });
+const User = mongoose.model('User', userSchema);
 
-const UserProfile = mongoose.model('UserProfile', userProfileSchema);
+// User Profile Schema
+const profileSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, unique: true },
+  skills: [String],
+  education_level: { type: String, default: '' },
+  field_of_study: { type: String, default: '' },
+  location: { type: String, default: '' },
+  job_type: { type: String, default: 'internship' }, // internship, fulltime, parttime
+  remote_preference: { type: Boolean, default: false },
+  updated_at: { type: Date, default: Date.now }
+});
+const Profile = mongoose.model('Profile', profileSchema);
 
-// Sample internships data seeding
-const sampleInternships = [
-  {
-    id: "INT001",
-    title: "Digital Marketing Assistant",
-    company: "StartupHub India",
-    sector: "Technology",
-    location: "Mumbai",
-    duration: "3 months",
-    stipend: 8000,
-    skills_required: ["social media", "content writing", "basic computer"],
-    education_level: "12th Pass",
-    description: "Learn digital marketing fundamentals and social media management",
-    application_deadline: new Date('2025-10-15'),
-    remote_friendly: true,
-    language_support: ["hindi", "english", "marathi"]
-  },
-  {
-    id: "INT002",
-    title: "Data Entry Specialist",
-    company: "GovTech Solutions",
-    sector: "Government",
-    location: "Delhi",
-    duration: "2 months",
-    stipend: 6000,
-    skills_required: ["typing", "ms office", "attention to detail"],
-    education_level: "10th Pass",
-    description: "Handle government data entry and document management tasks",
-    application_deadline: new Date('2025-09-30'),
-    remote_friendly: false,
-    language_support: ["hindi", "english"]
-  },
-  {
-    id: "INT003",
-    title: "Rural Development Assistant",
-    company: "NGO Connect",
-    sector: "Social Work",
-    location: "Rajasthan",
-    duration: "4 months",
-    stipend: 7000,
-    skills_required: ["communication", "field work", "hindi"],
-    education_level: "Graduate",
-    description: "Work with rural communities on development projects",
-    application_deadline: new Date('2025-11-01'),
-    remote_friendly: false,
-    language_support: ["hindi", "rajasthani"]
-  },
-  {
-    id: "INT004",
-    title: "Teaching Assistant",
-    company: "Education First",
-    sector: "Education",
-    location: "Kerala",
-    duration: "6 months",
-    stipend: 9000,
-    skills_required: ["teaching", "patience", "subject knowledge"],
-    education_level: "Graduate",
-    description: "Assist in teaching underprivileged children",
-    application_deadline: new Date('2025-10-20'),
-    remote_friendly: false,
-    language_support: ["malayalam", "english"]
-  },
-  {
-    id: "INT005",
-    title: "App Development Trainee",
-    company: "TechnoIndia",
-    sector: "Technology",
-    location: "Bangalore",
-    duration: "3 months",
-    stipend: 12000,
-    skills_required: ["programming", "problem solving", "mobile apps"],
-    education_level: "Graduate",
-    description: "Learn mobile app development with mentorship",
-    application_deadline: new Date('2025-11-15'),
-    remote_friendly: true,
-    language_support: ["english", "kannada"]
-  }
-];
+// ===================== AUTH MIDDLEWARE =====================
 
-// Initialize database with sample data
-async function initializeDatabase() {
+function authMiddleware(req, res, next) {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'No token provided' });
   try {
-    const count = await Internship.countDocuments();
-    if (count === 0) {
-      await Internship.insertMany(sampleInternships);
-      console.log('Sample internships added to database');
-    }
-  } catch (error) {
-    console.error('Error initializing database:', error);
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch {
+    res.status(401).json({ error: 'Invalid token' });
   }
 }
 
-// Routes
-app.get('/api/internships', async (req, res) => {
+// ===================== AUTH ROUTES =====================
+
+app.post('/api/auth/signup', async (req, res) => {
   try {
-    const internships = await Internship.find();
-    res.json(internships);
+    const { name, email, password } = req.body;
+    const existing = await User.findOne({ email });
+    if (existing) return res.status(400).json({ error: 'Email already registered' });
+    const hashed = await bcrypt.hash(password, 10);
+    const user = new User({ name, email, password: hashed });
+    await user.save();
+    const token = jwt.sign({ id: user._id, name: user.name, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+    res.json({ success: true, token, user: { id: user._id, name: user.name, email: user.email } });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.post('/api/recommend', async (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   try {
-    const userProfile = req.body;
-    
-    // Save user profile
-    const profile = new UserProfile(userProfile);
-    await profile.save();
-    
-    // Call Python ML model
-    const pythonScript = path.join(__dirname, 'ml_model.py');
-    const python = spawn('python', [pythonScript, JSON.stringify(userProfile)]);
-    
-    let recommendations = '';
-    let errorOutput = '';
-    
-    python.stdout.on('data', (data) => {
-      recommendations += data.toString();
-    });
-    
-    python.stderr.on('data', (data) => {
-      errorOutput += data.toString();
-    });
-    
-    python.on('close', async (code) => {
-      if (code === 0) {
-        try {
-          const recommendedIds = JSON.parse(recommendations.trim());
-          const recommendedInternships = await Internship.find({
-            id: { $in: recommendedIds }
-          });
-          res.json(recommendedInternships);
-        } catch (parseError) {
-          console.error('Error parsing Python output:', parseError);
-          res.status(500).json({ error: 'Error processing recommendations' });
-        }
-      } else {
-        console.error('Python script error:', errorOutput);
-        res.status(500).json({ error: 'ML model error' });
+    const { email, password } = req.body;
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ error: 'Invalid email or password' });
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) return res.status(400).json({ error: 'Invalid email or password' });
+    const token = jwt.sign({ id: user._id, name: user.name, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+    res.json({ success: true, token, user: { id: user._id, name: user.name, email: user.email } });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===================== PROFILE ROUTES =====================
+
+// Get profile
+app.get('/api/profile', authMiddleware, async (req, res) => {
+  try {
+    const profile = await Profile.findOne({ userId: req.user.id });
+    res.json({ success: true, profile: profile || null });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Save / Update profile
+app.post('/api/profile', authMiddleware, async (req, res) => {
+  try {
+    const { skills, education_level, field_of_study, location, job_type, remote_preference } = req.body;
+    const profile = await Profile.findOneAndUpdate(
+      { userId: req.user.id },
+      { userId: req.user.id, skills, education_level, field_of_study, location, job_type, remote_preference, updated_at: new Date() },
+      { upsert: true, new: true }
+    );
+    res.json({ success: true, profile });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===================== JOBS ROUTES =====================
+
+// Get jobs based on profile (auto suggestions)
+app.get('/api/jobs/suggested', authMiddleware, async (req, res) => {
+  try {
+    const profile = await Profile.findOne({ userId: req.user.id });
+    if (!profile) return res.status(404).json({ error: 'No profile found. Please complete your profile first.' });
+
+    // Build query from profile
+    const skillsQuery = profile.skills?.slice(0, 2).join(' ') || '';
+    const query = `${skillsQuery} ${profile.job_type === 'internship' ? 'internship' : 'developer'}`.trim();
+    const location = profile.location || 'India';
+
+    const response = await axios.get('https://jsearch.p.rapidapi.com/search', {
+      params: { query, location, num_pages: '1', date_posted: 'month' },
+      headers: {
+        'X-RapidAPI-Key': '4726b43329msh3fc86cb6f8d53bdp19ed9ajsnde8aaf5c65be',
+        'X-RapidAPI-Host': 'jsearch.p.rapidapi.com'
       }
     });
-    
+
+    const jobs = response.data.data.map(job => ({
+      id: job.job_id,
+      title: job.job_title,
+      company: job.employer_name,
+      location: job.job_city || job.job_country,
+      type: job.job_employment_type,
+      description: job.job_description?.slice(0, 250) + '...',
+      applyLink: job.job_apply_link,
+      postedAt: job.job_posted_at_datetime_utc,
+      isRemote: job.job_is_remote,
+      salary: job.job_min_salary ? `${job.job_min_salary} - ${job.job_max_salary}` : 'Not disclosed'
+    }));
+
+    res.json({ success: true, count: jobs.length, jobs, query, location });
   } catch (error) {
-    console.error('Recommendation error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-app.get('/api/sectors', async (req, res) => {
+// Search jobs manually
+app.get('/api/jobs', authMiddleware, async (req, res) => {
+  const { query, location } = req.query;
   try {
-    const sectors = await Internship.distinct('sector');
-    res.json(sectors);
+    const response = await axios.get('https://jsearch.p.rapidapi.com/search', {
+      params: { query: query || 'software engineer internship', location: location || 'India', num_pages: '1', date_posted: 'month' },
+      headers: {
+        'X-RapidAPI-Key': '4726b43329msh3fc86cb6f8d53bdp19ed9ajsnde8aaf5c65be',
+        'X-RapidAPI-Host': 'jsearch.p.rapidapi.com'
+      }
+    });
+
+    const jobs = response.data.data.map(job => ({
+      id: job.job_id,
+      title: job.job_title,
+      company: job.employer_name,
+      location: job.job_city || job.job_country,
+      type: job.job_employment_type,
+      description: job.job_description?.slice(0, 250) + '...',
+      applyLink: job.job_apply_link,
+      postedAt: job.job_posted_at_datetime_utc,
+      isRemote: job.job_is_remote,
+      salary: job.job_min_salary ? `${job.job_min_salary} - ${job.job_max_salary}` : 'Not disclosed'
+    }));
+
+    res.json({ success: true, count: jobs.length, jobs });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-app.get('/api/locations', async (req, res) => {
-  try {
-    const locations = await Internship.distinct('location');
-    res.json(locations);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+// ===================== START =====================
 
-// Connect to MongoDB and start server
 mongoose.connection.once('open', () => {
   console.log('Connected to MongoDB');
-  initializeDatabase();
 });
 
 app.listen(PORT, () => {
